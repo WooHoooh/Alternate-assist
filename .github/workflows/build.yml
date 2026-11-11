@@ -1,1 +1,69 @@
+name: Build Alternate Assist
 
+on:
+  workflow_dispatch:
+  push:
+    branches: ["**"]
+
+jobs:
+  engine-tests:
+    name: Engine unit tests (host)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Unpack the project zip
+        shell: pwsh
+        run: |
+          $zips = @(Get-ChildItem -Path . -Filter *.zip)
+          if ($zips.Count -ne 1) { throw "Expected exactly one .zip in the repo root, found $($zips.Count)." }
+          Expand-Archive -Path $zips[0].FullName -DestinationPath _unz -Force
+          Copy-Item -Path "_unz/alternate-assist/*" -Destination . -Recurse -Force
+          Remove-Item _unz -Recurse -Force
+      - name: Check mod.json against the code
+        run: python3 tools/check_defaults.py
+      - name: Build and run the engine tests
+        run: |
+          g++ -std=c++20 -O2 -Wall -Wextra -Werror -I src tests/engine_test.cpp -o engine_test
+          ./engine_test
+
+  build:
+    name: ${{ matrix.config.name }}
+    runs-on: ${{ matrix.config.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - name: "Windows x64"
+            os: windows-latest
+            target: Win64
+            artifact: alternate-assist-windows-x64
+          - name: "Android ARM64"
+            os: ubuntu-latest
+            target: Android64
+            artifact: alternate-assist-android-arm64
+    steps:
+      - uses: actions/checkout@v7
+      - name: Unpack the project zip and set your mod id
+        shell: pwsh
+        run: |
+          $zips = @(Get-ChildItem -Path . -Filter *.zip)
+          if ($zips.Count -ne 1) { throw "Expected exactly one .zip in the repo root, found $($zips.Count)." }
+          Expand-Archive -Path $zips[0].FullName -DestinationPath _unz -Force
+          Copy-Item -Path "_unz/alternate-assist/*" -Destination . -Recurse -Force
+          Remove-Item _unz -Recurse -Force
+          $owner = $env:GITHUB_REPOSITORY_OWNER
+          $text = Get-Content -Path mod.json -Raw
+          $text = $text.Replace("yourname.alternate-assist", $owner.ToLower() + ".alternate-assist").Replace('"YourName"', '"' + $owner + '"')
+          Set-Content -Path mod.json -Value $text -NoNewline
+          Get-Content mod.json | Select-String '"id"|"developer"'
+      - name: Build the mod
+        id: build
+        uses: geode-sdk/build-geode-mod@main
+        with:
+          target: ${{ matrix.config.target }}
+      - name: Upload the .geode package
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.config.artifact }}
+          path: ${{ steps.build.outputs.build-output }}
+          if-no-files-found: error
